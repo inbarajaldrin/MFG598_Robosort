@@ -1,0 +1,11 @@
+[submodule "RoboSort"]
+	path = RoboSort
+	url = git@github.com:inbarajaldrin/RoboSort.git
+[submodule "aruco_camera_localizer"]
+	path = aruco_camera_localizer
+	url = git@github.com:inbarajaldrin/aruco_camera_localizer.git
+	branch = robosort
+[submodule "ros-mcp-server"]
+	path = ros-mcp-server
+	url = git@github.com:inbarajaldrin/ros-mcp-server.git
+	branch = robosort
