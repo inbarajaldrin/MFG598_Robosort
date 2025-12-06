@@ -35,6 +35,8 @@ MQTT_CONFIG = {
     'broker': os.getenv('MQTT_BROKER', 'broker.hivemq.com'),
     'port': int(os.getenv('MQTT_PORT', '1883')),
     'topic': os.getenv('MQTT_TOPIC', 'lego_sorting/sql_update'),
+    'query_topic': os.getenv('MQTT_QUERY_TOPIC', 'lego_sorting/sql_query'),
+    'response_topic': os.getenv('MQTT_RESPONSE_TOPIC', 'lego_sorting/sql_response'),
     'client_id': os.getenv('MQTT_CLIENT_ID', 'lego_dashboard_viewer'),
     'username': os.getenv('MQTT_USERNAME', None),
     'password': os.getenv('MQTT_PASSWORD', None)
@@ -91,6 +93,13 @@ class ImageSubscriber(Node):
             self.get_logger().error(f'Error processing image from {self.topic_name}: {str(e)}')
 
 
+def normalize_color(color):
+    """Normalize color string to consistent format: first letter capitalized, rest lowercase"""
+    if not color:
+        return color
+    return color.capitalize()
+
+
 class LocalDatabase:
     """Local SQLite database manager"""
     
@@ -136,7 +145,7 @@ class LocalDatabase:
             self.conn = None
     
     def insert_record(self, color, aruco_id, count, status='Processing', timestamp=None):
-        """Insert a new sorting record"""
+        """Insert a new sorting record (color should already be normalized by caller)"""
         if not self.conn:
             return None
         
@@ -202,7 +211,7 @@ class LocalDatabase:
             return None
     
     def update_processing_to_completed(self, aruco_marker_id, color=None):
-        """Update the most recent Processing record to Completed"""
+        """Update the most recent Processing record to Completed (color should already be normalized by caller)"""
         if not self.conn:
             return False
         
@@ -350,6 +359,66 @@ class LocalDatabase:
             print(f"⚠ Error fetching records: {e}")
             return []
     
+    def query_records(self, color=None, aruco_id=None):
+        """Query records from database with optional filters (color should already be normalized by caller)"""
+        if not self.conn:
+            return []
+        
+        try:
+            cursor = self.conn.cursor()
+            
+            if color and aruco_id:
+                # Query by both color and aruco_id (exact match since colors are normalized)
+                cursor.execute("""
+                    SELECT id, timestamp, color, aruco_marker_id, count, status
+                    FROM sorting_records
+                    WHERE color = ? AND aruco_marker_id = ?
+                    ORDER BY timestamp DESC, id DESC
+                """, (color, aruco_id))
+            elif color:
+                # Query by color only (exact match since colors are normalized)
+                cursor.execute("""
+                    SELECT id, timestamp, color, aruco_marker_id, count, status
+                    FROM sorting_records
+                    WHERE color = ?
+                    ORDER BY timestamp DESC, id DESC
+                """, (color,))
+            elif aruco_id:
+                # Query by aruco_id only
+                cursor.execute("""
+                    SELECT id, timestamp, color, aruco_marker_id, count, status
+                    FROM sorting_records
+                    WHERE aruco_marker_id = ?
+                    ORDER BY timestamp DESC, id DESC
+                """, (aruco_id,))
+            else:
+                # Query all records
+                cursor.execute("""
+                    SELECT id, timestamp, color, aruco_marker_id, count, status
+                    FROM sorting_records
+                    ORDER BY timestamp DESC, id DESC
+                """)
+            
+            records = cursor.fetchall()
+            cursor.close()
+            
+            result = []
+            for record in records:
+                result.append({
+                    'id': record[0],
+                    'timestamp': record[1],
+                    'color': record[2],
+                    'aruco_marker_id': record[3],
+                    'count': record[4],
+                    'status': record[5]
+                })
+            
+            return result
+            
+        except sqlite3.Error as e:
+            print(f"⚠ Error querying records: {e}")
+            return []
+    
     def clear_database(self):
         """Clear all records from the database and reset ID sequence"""
         if not self.conn:
@@ -397,6 +466,10 @@ def process_mqtt_message(message_data, db):
                 print(f'⚠ Missing aruco_marker_id for update action')
                 return False
             
+            # Normalize color if provided
+            if color:
+                color = normalize_color(color)
+            
             print(f"🔄 Processing UPDATE action: ArUco ID {aruco_id}, Color {color or 'any'}")
             return db.update_processing_to_completed(aruco_id, color)
         
@@ -418,7 +491,7 @@ def process_mqtt_message(message_data, db):
                 return False
             
             aruco_id = int(data['aruco_marker_id'])
-            color = str(data['color'])
+            color = normalize_color(str(data['color']))
             status = str(data['status'])
             count = int(data['count'])
             timestamp = None
@@ -459,6 +532,98 @@ def process_mqtt_message(message_data, db):
         import traceback
         traceback.print_exc()
         return False
+
+
+def process_query_message(message_data, db, mqtt_client):
+    """Process MQTT query message and publish response"""
+    try:
+        if isinstance(message_data, str):
+            data = json.loads(message_data)
+        else:
+            data = message_data
+        
+        action = data.get('action', 'query')
+        
+        if action != 'query':
+            print(f'⚠ Invalid action for query message: {action}')
+            return
+        
+        # Extract optional filters
+        color = data.get('color')
+        aruco_id = data.get('aruco_marker_id')
+        
+        # Normalize color if provided
+        if color:
+            color = normalize_color(color)
+        
+        if aruco_id is not None:
+            try:
+                aruco_id = int(aruco_id)
+            except (ValueError, TypeError):
+                print(f'⚠ Invalid aruco_marker_id: {aruco_id}')
+                aruco_id = None
+        
+        # Query database
+        print(f"🔍 Processing QUERY action: Color={color}, ArUco ID={aruco_id}")
+        records = db.query_records(color=color, aruco_id=aruco_id)
+        
+        # Prepare response
+        response = {
+            'status': 'success',
+            'count': len(records),
+            'records': records
+        }
+        
+        # Publish response
+        response_payload = json.dumps(response)
+        result = mqtt_client.publish(
+            MQTT_CONFIG['response_topic'],
+            payload=response_payload,
+            qos=1,
+            retain=False
+        )
+        
+        if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            print(f"✓ Query response published: {len(records)} record(s) found")
+        else:
+            print(f"⚠ Failed to publish query response (rc={result.rc})")
+                
+    except json.JSONDecodeError as e:
+        print(f'⚠ Invalid JSON in query message: {e}')
+        error_response = {
+            'status': 'error',
+            'error': f'Invalid JSON: {str(e)}',
+            'count': 0,
+            'records': []
+        }
+        try:
+            mqtt_client.publish(
+                MQTT_CONFIG['response_topic'],
+                payload=json.dumps(error_response),
+                qos=1,
+                retain=False
+            )
+        except:
+            pass
+    except Exception as e:
+        print(f'⚠ Error processing query message: {e}')
+        import traceback
+        traceback.print_exc()
+        error_response = {
+            'status': 'error',
+            'error': str(e),
+            'count': 0,
+            'records': []
+        }
+        try:
+            mqtt_client.publish(
+                MQTT_CONFIG['response_topic'],
+                payload=json.dumps(error_response),
+                qos=1,
+                retain=False
+            )
+        except:
+            pass
 
 
 class ImageGUI:
@@ -722,9 +887,15 @@ class ImageGUI:
         """Callback when MQTT client connects"""
         if rc == 0:
             self.mqtt_connected = True
-            result, mid = client.subscribe(MQTT_CONFIG['topic'], qos=1)
-            if result == mqtt.MQTT_ERR_SUCCESS:
-                print(f"✓ MQTT connected and subscribed to {MQTT_CONFIG['topic']}")
+            # Subscribe to update topic
+            result1, mid1 = client.subscribe(MQTT_CONFIG['topic'], qos=1)
+            # Subscribe to query topic
+            result2, mid2 = client.subscribe(MQTT_CONFIG['query_topic'], qos=1)
+            
+            if result1 == mqtt.MQTT_ERR_SUCCESS and result2 == mqtt.MQTT_ERR_SUCCESS:
+                print(f"✓ MQTT connected and subscribed to:")
+                print(f"  - {MQTT_CONFIG['topic']} (updates)")
+                print(f"  - {MQTT_CONFIG['query_topic']} (queries)")
                 self.root.after(0, lambda: self.status_label.config(
                     text="✓ Connected to MQTT", fg="green"
                 ))
@@ -758,13 +929,21 @@ class ImageGUI:
         """Callback when MQTT message is received"""
         try:
             message_str = msg.payload.decode('utf-8')
-            print(f"📨 MQTT message received: {message_str[:100]}{'...' if len(message_str) > 100 else ''}")
+            topic = msg.topic
             
-            # Process message and update database
-            process_mqtt_message(message_str, self.db)
-            
-            # Queue GUI update
-            self.mqtt_queue.put('refresh')
+            # Determine if this is a query or update message
+            if topic == MQTT_CONFIG['query_topic']:
+                # Handle query request
+                print(f"📨 MQTT query received: {message_str[:100]}{'...' if len(message_str) > 100 else ''}")
+                process_query_message(message_str, self.db, client)
+            elif topic == MQTT_CONFIG['topic']:
+                # Handle update/insert message
+                print(f"📨 MQTT update received: {message_str[:100]}{'...' if len(message_str) > 100 else ''}")
+                process_mqtt_message(message_str, self.db)
+                # Queue GUI update
+                self.mqtt_queue.put('refresh')
+            else:
+                print(f"⚠ Unknown topic: {topic}")
             
         except Exception as e:
             print(f"⚠ Error processing MQTT message: {e}")
