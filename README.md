@@ -145,14 +145,14 @@ Configure ROS 2 DDS to enable communication between the robot and remote PC:
    This will localize all objects and ArUco markers in the scene relative to the robotic arm's base to perform inverse kinematics.
 
 6. **Launch the dashboard GUI**:
-   - Update the ROS2 camera topics in `robot_gui/tkinter_gui.py` to match your camera topics:
+   - Update the ROS2 camera topics in `dashboard_gui/tkinter_gui.py` to match your camera topics:
      ```python
      TOPIC_1 = "/camera/image_rgb_exo"  # Update to your camera topic
      TOPIC_2 = "/camera_annotated"       # Update to your annotated camera topic
      ```
    - Then launch the dashboard:
      ```bash
-     python3 ~/Documents/MFG598_Robosort/robot_gui/tkinter_gui.py
+     python3 ~/Documents/MFG598_Robosort/dashboard_gui/tkinter_gui.py
      ```
 
 ### Step 3: ROS MCP Server Setup

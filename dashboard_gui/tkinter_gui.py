@@ -194,6 +194,7 @@ class LocalDatabase:
                 'status': record[5]
             }
             
+            print(f"✓ Inserted record: ID {result['id']}, ArUco {aruco_id}, Color {color}, Status {status}, Count {count}")
             return result
             
         except sqlite3.Error as e:
@@ -244,6 +245,11 @@ class LocalDatabase:
             self.conn.commit()
             updated = cursor.rowcount > 0
             cursor.close()
+            
+            if updated:
+                print(f"✓ Updated Processing to Completed: ArUco ID {aruco_marker_id}, Color {color or 'any'}")
+            else:
+                print(f"⚠ No Processing record found to update: ArUco ID {aruco_marker_id}, Color {color or 'any'}")
             
             return updated
             
@@ -345,7 +351,7 @@ class LocalDatabase:
             return []
     
     def clear_database(self):
-        """Clear all records from the database"""
+        """Clear all records from the database and reset ID sequence"""
         if not self.conn:
             return False
         
@@ -353,10 +359,14 @@ class LocalDatabase:
             cursor = self.conn.cursor()
             cursor.execute("DELETE FROM sorting_records")
             deleted_count = cursor.rowcount
+            
+            # Reset the AUTOINCREMENT sequence so IDs start from 1 again
+            cursor.execute("DELETE FROM sqlite_sequence WHERE name='sorting_records'")
+            
             self.conn.commit()
             cursor.close()
             
-            print(f"✓ Cleared database: Removed {deleted_count} records")
+            print(f"✓ Cleared database: Removed {deleted_count} records, reset ID sequence")
             return True
             
         except sqlite3.Error as e:
@@ -384,8 +394,10 @@ def process_mqtt_message(message_data, db):
             color = data.get('color')
             
             if not aruco_id:
+                print(f'⚠ Missing aruco_marker_id for update action')
                 return False
             
+            print(f"🔄 Processing UPDATE action: ArUco ID {aruco_id}, Color {color or 'any'}")
             return db.update_processing_to_completed(aruco_id, color)
         
         elif action == 'update_by_id':
@@ -393,13 +405,16 @@ def process_mqtt_message(message_data, db):
             new_status = str(data.get('status', 'Completed'))
             
             if not record_id:
+                print(f'⚠ Missing record_id for update_by_id action')
                 return False
             
+            print(f"🔄 Processing UPDATE_BY_ID action: Record ID {record_id}, Status {new_status}")
             return db.update_record_status(record_id, new_status)
         
         else:
             required_fields = ['aruco_marker_id', 'color', 'status', 'count']
             if not all(field in data for field in required_fields):
+                print(f'⚠ Missing required fields in message: {required_fields}')
                 return False
             
             aruco_id = int(data['aruco_marker_id'])
@@ -418,9 +433,11 @@ def process_mqtt_message(message_data, db):
                         pass
             
             if status == 'Completed':
+                print(f"🔄 Processing INSERT with Completed status: ArUco ID {aruco_id}, Color {color}")
                 updated = db.update_processing_to_completed(aruco_id, color)
                 return updated
             
+            print(f"🔄 Processing INSERT action: ArUco ID {aruco_id}, Color {color}, Status {status}, Count {count}")
             result = db.insert_record(
                 color=color,
                 aruco_id=aruco_id,
@@ -429,6 +446,9 @@ def process_mqtt_message(message_data, db):
                 timestamp=timestamp
             )
             
+            if result is None:
+                print(f"⚠ Insert failed (may be skipped due to existing Processing record)")
+            
             return result is not None
                 
     except json.JSONDecodeError as e:
@@ -436,6 +456,8 @@ def process_mqtt_message(message_data, db):
         return False
     except Exception as e:
         print(f'⚠ Error processing message: {e}')
+        import traceback
+        traceback.print_exc()
         return False
 
 
