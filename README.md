@@ -2,6 +2,9 @@
 
 ![RoboSort System](resources/IMG_5832.jpeg)
 
+### Demo Video
+[Watch RoboSort Demo Video](https://github.com/inbarajaldrin/MFG598_Robosort/raw/main/resources/robosort_demo.mp4)
+
 ## Preface
 
 **Edge devices** like **Raspberry Pi**, **Jetson Nano**, **Arduino**, and **drones** have very little processing capabilities onboard, which makes the scope of mini projects using these devices close to impossible. Demonstrating algorithms like **YOLO**, **SLAM**, **RTAB-Map**, or even running open-source **LLMs** locally and in real-time becomes very difficult without a significant drop in **FPS**.
@@ -37,10 +40,6 @@ The RoboSort system consists of four main layers:
   <img src="resources/lego_detection.png" alt="LEGO Detection" width="48%"/>
   <img src="resources/aruco_detection.png" alt="ArUco Detection" width="48%"/>
 </div>
-
-## Dashboard
-
-<img src="resources/dashboard.png" alt="Dashboard" width="800"/>
 
 ## Setup Instructions
 
